@@ -1,0 +1,11 @@
+[Unit]
+Description=Jump Host SSH Server
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/jayoh -config /etc/jayoh/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=control-group
+Restart=Always
+User=jayoh
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
