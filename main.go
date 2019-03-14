@@ -30,7 +30,7 @@ var (
 		"hmac-sha2-256-etm@openssh.com",
 	}
 
-	configPath = flag.String("config", "/etc/jayoh/config.yaml", "path to config file")
+	configPath = flag.String("config", "/etc/jayoh/config.json", "path to config file")
 	config     = struct {
 		ACLFile       string `json:"acl_file"`
 		ServerKeyFile string `json:"server_key_file"`
