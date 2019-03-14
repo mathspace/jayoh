@@ -1,5 +1,5 @@
 {
-  "listen": "127.0.0.1:2222",
+  "listen": "0.0.0.0:22",
   "acl_file": "/etc/jayoh/acl.json",
-  "server_key_file": "/etc/jayoh/server_id_rsa"
+  "server_key_file": "/etc/jayoh/server_key"
 }
