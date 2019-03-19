@@ -35,7 +35,11 @@ var (
 		ACLFile       string `json:"acl_file"`
 		ServerKeyFile string `json:"server_key_file"`
 		Listen        string `json:"listen"`
-	}{Listen: "127.0.0.1:2222"}
+		MaxAuthTries  int    `json:"max_auth_tries"`
+	}{
+		Listen:       "127.0.0.1:2222",
+		MaxAuthTries: 4,
+	}
 
 	sshServerConfig = &ssh.ServerConfig{
 		PasswordCallback:  passwordCallback,
@@ -44,11 +48,6 @@ var (
 
 	accessControlList = &acl.ACL{}
 )
-
-func init() {
-	sshServerConfig.KeyExchanges = recommendedKexAlgos
-	sshServerConfig.MACs = recommendedMACs
-}
 
 // directTCPIPPayload holds the extra payload of a direct-tcpip SSH
 // new channel request.
@@ -177,6 +176,9 @@ func reloadACL() error {
 func run() error {
 
 	flag.Parse()
+	sshServerConfig.KeyExchanges = recommendedKexAlgos
+	sshServerConfig.MACs = recommendedMACs
+	sshServerConfig.MaxAuthTries = config.MaxAuthTries
 
 	// Load config file
 	{
