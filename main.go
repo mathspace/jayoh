@@ -207,7 +207,7 @@ func run() error {
 	}
 
 	if err := reloadACL(); err != nil {
-		return err
+		log.Printf("loading ACL failed - no access is allowed: %s", err.Error())
 	}
 
 	// Run SIGHUP handler for reloading config
