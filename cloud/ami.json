@@ -1,0 +1,32 @@
+{
+  "variables": {
+    "region": ""
+  },
+  "builders": [
+    {
+      "type": "amazon-ebs",
+      "region": "{{user `region`}}",
+      "source_ami": "ami-0019ef04ac50be30f",
+      "instance_type": "t2.micro",
+      "ssh_username": "ec2-user",
+      "ami_name": "jayoh SSH Jump Server {{timestamp}}",
+      "shutdown_behavior": "terminate",
+      "provisioners": [
+        {
+          "type": "file",
+          "source": "../jayoh",
+          "destination": "/tmp/jayoh"
+        },
+        {
+          "type": "file",
+          "source": "../jayoh.service",
+          "destination": "/tmp/jayoh.service"
+        },
+        {
+          "type": "shell",
+          "script": "ami.sh"
+        }
+      ]
+    }
+  ]
+}
