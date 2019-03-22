@@ -67,6 +67,26 @@ sudo mv /tmp/jayoh.service /etc/systemd/system
 #   ]
 # }
 
+cat <<"EOF" | sudo tee /opt/save_param_from_tag > /dev/null
+#!/bin/bash
+set -ex -o pipefail
+
+TAGNAME="$1"
+OUTFILE="$2"
+
+METAURL='http://169.254.169.254/latest/dynamic/instance-identity/document'
+export AWS_DEFAULT_REGION=$(curl -s $METAURL | jq -r .region)
+INSTANCE_ID=$(curl -s $METAURL | jq -r .instanceId)
+
+SERVER_KEY_PARAM_NAME="$(
+  aws ec2 describe-instances --filters=Name=instance-id,Values=$INSTANCE_ID |
+    jq -r '.Reservations[0].Instances[].Tags[] | select(.Key=="'"$TAGNAME"'") | .Value'
+)"
+aws ssm get-parameter --with-decryption --name "$SERVER_KEY_PARAM_NAME" |
+  jq -r .Parameter.Value > "$OUTFILE"
+EOF
+sudo chmod +x /opt/save_param_from_tag
+
 cat <<"EOF" | sudo tee /etc/systemd/system/key_loader.service > /dev/null
 [Unit]
 Description=SSH server key loader
@@ -75,55 +95,19 @@ Before=jayoh.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/load_server_key
+ExecStart=/opt/save_param_from_tag jayoh/server_key_parameter_name /etc/jayoh/secrets/server_key
 User=jayoh
 StandardOutput=syslog
 StandardError=syslog
 SyslogIdentifier=load_server_key
 EOF
 
-cat <<"EOF" | sudo tee /opt/load_server_key > /dev/null
-#!/bin/bash
-set -ex -o pipefail
-
-METAURL='http://169.254.169.254/latest/dynamic/instance-identity/document'
-export AWS_DEFAULT_REGION=$(curl -s $METAURL | jq -r .region)
-INSTANCE_ID=$(curl -s $METAURL | jq -r .instanceId)
-
-SERVER_KEY_PARAM_NAME="$(
-  aws ec2 describe-instances --filters=Name=instance-id,Values=$INSTANCE_ID |
-    jq -r '.Reservations[0].Instances[].Tags[] | select(.Key=="jayoh/server_key_parameter_name") | .Value'
-)"
-aws ssm get-parameter --with-decryption --name "$SERVER_KEY_PARAM_NAME" |
-  jq -r .Parameter.Value |
-  sudo -u jayoh tee /etc/jayoh/secrets/server_key > /dev/null
-EOF
-sudo chmod +x /opt/load_server_key
-
 # ACL loader will reload /etc/jayoh/secrets/acl.json once a minute from
 # parameter store. The parameter name is read from
 # "jayoh/acl_parameter_name" tag of the instance.
 
-cat <<"EOF" | sudo tee /opt/load_jayoh_acl > /dev/null
-#!/bin/bash
-set -ex -o pipefail
-
-METAURL='http://169.254.169.254/latest/dynamic/instance-identity/document'
-export AWS_DEFAULT_REGION=$(curl -s $METAURL | jq -r .region)
-INSTANCE_ID=$(curl -s $METAURL | jq -r .instanceId)
-
-SERVER_KEY_PARAM_NAME="$(
-  aws ec2 describe-instances --filters=Name=instance-id,Values=$INSTANCE_ID |
-    jq -r '.Reservations[0].Instances[].Tags[] | select(.Key=="jayoh/acl_parameter_name") | .Value'
-)"
-aws ssm get-parameter --with-decryption --name "$SERVER_KEY_PARAM_NAME" |
-  jq -r .Parameter.Value |
-  sudo -u jayoh tee /etc/jayoh/secrets/acl.json > /dev/null
-EOF
-sudo chmod +x /opt/load_jayoh_acl
-
 cat <<"EOF" | sudo tee -a /etc/crontab > /dev/null
-*  *  *  *  * root sudo -u jayoh /opt/load_jayoh_acl && systemctl reload jayoh.service
+*  *  *  *  * root sudo -u jayoh /opt/save_param_from_tag jayoh/acl_parameter_name /etc/jayoh/secrets/acl.json && systemctl reload jayoh.service
 EOF
 
 # tmpfs will hold its data in volatile memory and won't be written to disk when no swap is setup
