@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -32,13 +33,15 @@ var (
 
 	configPath = flag.String("config", "/etc/jayoh/config.json", "path to config file")
 	config     = struct {
-		ACLFile       string `json:"acl_file"`
-		ServerKeyFile string `json:"server_key_file"`
-		Listen        string `json:"listen"`
-		MaxAuthTries  int    `json:"max_auth_tries"`
+		ACLFile          string `json:"acl_file"`
+		ServerKeyFile    string `json:"server_key_file"`
+		Listen           string `json:"listen"`
+		MaxAuthTries     int    `json:"max_auth_tries"`
+		AuthFailureDelay int    `json:"auth_failure_delay"`
 	}{
-		Listen:       "127.0.0.1:2222",
-		MaxAuthTries: 4,
+		Listen:           "127.0.0.1:2222",
+		MaxAuthTries:     6,
+		AuthFailureDelay: 5,
 	}
 
 	sshServerConfig = &ssh.ServerConfig{
@@ -70,6 +73,8 @@ func passwordCallback(conn ssh.ConnMetadata, pwd []byte) (*ssh.Permissions, erro
 		return nil, nil
 	}
 	log.Printf("remote %s: password login: failed for user \"%s\"", conn.RemoteAddr(), conn.User())
+	log.Printf("remote %s: delaying %d seconds before responding", conn.RemoteAddr(), config.AuthFailureDelay)
+	time.Sleep(time.Second * time.Duration(config.AuthFailureDelay))
 	return nil, fmt.Errorf("login failed")
 }
 
@@ -80,6 +85,8 @@ func publicKeyCallback(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissio
 		return nil, nil
 	}
 	log.Printf("remote %s: public key login: failed for user \"%s\"", conn.RemoteAddr(), conn.User())
+	log.Printf("remote %s: delaying %d seconds before responding", conn.RemoteAddr(), config.AuthFailureDelay)
+	time.Sleep(time.Second * time.Duration(config.AuthFailureDelay))
 	return nil, fmt.Errorf("login failed")
 }
 
