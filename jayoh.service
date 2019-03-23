@@ -12,3 +12,4 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 StandardOutput=syslog
 StandardError=syslog
 SyslogIdentifier=jayoh
+LimitNOFILE=10000
