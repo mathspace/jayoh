@@ -23,6 +23,8 @@ cd jayoh
 go build
 ```
 
+Above will create the single file binary `jayoh` in the root.
+
 # Run
 
 **Generate a new server key:**
@@ -70,6 +72,8 @@ Few notes:
   label) that allows all users belonging to group `dev` to access all
   IPs under the `127.0.0.0/8` subnet and the exact host name
   `www.google.com`.
+* There is currently no way to specify wildcard domain names, only IP
+  ranges.
 
 **Create the main configuration file:**
 
@@ -93,4 +97,26 @@ EOF
 
 # Connect
 
-TODO
+*jayoh* does not support shell login. This is by design. Hence you need
+to specify a second host to connect to.
+
+## Port forwarding
+
+Following from the examples so far, let's say you have a webserver
+running on port 8080 on the same machine where *jayoh* is running.
+Following will setup a tunnel to access the webserver:
+
+```sh
+ssh -N -L 8181:127.0.0.1:8080 jayoh-host
+```
+
+`-N` prevents SSH from opening a shell session in addition to the TCP
+port forward.
+
+## Tunnel for SSH
+
+You can also use *jayoh* to tunnel another SSH connection:
+
+```sh
+ssh -N target-server -o 'ProxyCommand ssh jayoh-host -W target-server:22'
+```
