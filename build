@@ -1,0 +1,10 @@
+#!/bin/sh
+
+set -ex
+
+go build
+
+if [ "$1" == ami ]; then
+  cd cloud
+  packer build -var version="$(git rev-parse --short HEAD)" ami.json
+fi
