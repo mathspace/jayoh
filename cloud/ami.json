@@ -1,32 +1,43 @@
 {
   "variables": {
-    "region": ""
+    "version": "development"
   },
   "builders": [
     {
       "type": "amazon-ebs",
-      "region": "{{user `region`}}",
       "source_ami": "ami-0019ef04ac50be30f",
+      "source_ami_filter": {
+        "filters": {
+          "owner-alias": "amazon",
+          "state": "available",
+          "name": "amzn2-ami-hvm-*-x86_64-gp2"
+        },
+        "most_recent": true
+      },
       "instance_type": "t2.micro",
       "ssh_username": "ec2-user",
-      "ami_name": "jayoh SSH Jump Server {{timestamp}}",
+      "ami_name": "jayoh SSH Jump Server {{user `version`}} {{timestamp}}",
       "shutdown_behavior": "terminate",
-      "provisioners": [
-        {
-          "type": "file",
-          "source": "../jayoh",
-          "destination": "/tmp/jayoh"
-        },
-        {
-          "type": "file",
-          "source": "../jayoh.service",
-          "destination": "/tmp/jayoh.service"
-        },
-        {
-          "type": "shell",
-          "script": "ami.sh"
-        }
-      ]
+      "tags": {
+        "Name": "jayoh SSH Jump Server {{user `version`}}",
+        "jayoh/version": "{{user `version`}}"
+      }
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "file",
+      "source": "../jayoh",
+      "destination": "/tmp/jayoh"
+    },
+    {
+      "type": "file",
+      "source": "../jayoh.service",
+      "destination": "/tmp/jayoh.service"
+    },
+    {
+      "type": "shell",
+      "script": "ami.sh"
     }
   ]
 }

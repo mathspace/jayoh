@@ -1,6 +1,41 @@
 #!/bin/bash
 set -ex -o pipefail
 
+# Due to lack of support from AWS CLI [1], default region must be set
+# explicitly for AWS logging agent. This service file will set
+# AWS_DEFAULT_REGION env var for the whole OS on boot and also
+# specifically in /etc/awslogs/awscli.conf for log agent.
+#
+# [1]: https://github.com/aws/aws-cli/issues/486
+cat <<"EOF" | sudo tee /opt/set_aws_default_region > /dev/null
+#!/bin/bash
+set -xe -o pipefail
+
+METAURL='http://169.254.169.254/latest/dynamic/instance-identity/document'
+REGION="$(curl -s $METAURL | jq -r .region)"
+
+sed -i '/^AWS_DEFAULT_REGION/d' /etc/environment
+echo "AWS_DEFAULT_REGION=$REGION" >> /etc/environment
+
+sed -i "s/^region.*/region = $REGION/" /etc/awslogs/awscli.conf
+EOF
+sudo chmod +x /opt/set_aws_default_region
+
+cat <<"EOF" | sudo tee /etc/systemd/system/aws_default_region_setter.service > /dev/null
+[Unit]
+Description=AWS default region setter
+After=network.target
+Before=cloud-init.service key_loader.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/set_aws_default_region
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl enable aws_default_region_setter.service
+
 # Setup AWS cloudwatch logger agent
 # This requires a bunch of permissions. Below is a sample policy:
 #
@@ -45,6 +80,7 @@ sudo mkdir -p /opt
 sudo mv /tmp/jayoh /opt
 sudo chmod +x /opt/jayoh
 sudo mv /tmp/jayoh.service /etc/systemd/system
+sudo systemctl enable jayoh.service
 
 # Server key loader will load the server private key from parameter
 # store once on every boot. The parameter name is read from
@@ -61,8 +97,8 @@ sudo mv /tmp/jayoh.service /etc/systemd/system
 #     },
 #     {
 #       "Effect": "Allow",
-#       "Action": "ssm:GetParameters",
-#       "Resource": "arn:aws:ssm:us-west-1:1234123123:parameter/jayoh-*"
+#       "Action": "ssm:GetParameter*",
+#       "Resource": "arn:aws:ssm:us-west-1:1234123123:parameter/jayoh/*"
 #     }
 #   ]
 # }
@@ -75,7 +111,6 @@ TAGNAME="$1"
 OUTFILE="$2"
 
 METAURL='http://169.254.169.254/latest/dynamic/instance-identity/document'
-export AWS_DEFAULT_REGION=$(curl -s $METAURL | jq -r .region)
 INSTANCE_ID=$(curl -s $METAURL | jq -r .instanceId)
 
 SERVER_KEY_PARAM_NAME="$(
@@ -87,6 +122,7 @@ aws ssm get-parameter --with-decryption --name "$SERVER_KEY_PARAM_NAME" |
 EOF
 sudo chmod +x /opt/save_param_from_tag
 
+# Setup script to store server key in the right place on boot
 cat <<"EOF" | sudo tee /etc/systemd/system/key_loader.service > /dev/null
 [Unit]
 Description=SSH server key loader
@@ -100,7 +136,12 @@ User=jayoh
 StandardOutput=syslog
 StandardError=syslog
 SyslogIdentifier=load_server_key
+EnvironmentFile=/etc/environment
+
+[Install]
+WantedBy=multi-user.target
 EOF
+sudo systemctl enable key_loader.service
 
 # ACL loader will reload /etc/jayoh/secrets/acl.json once a minute from
 # parameter store. The parameter name is read from
@@ -112,7 +153,12 @@ EOF
 
 # tmpfs will hold its data in volatile memory and won't be written to disk when no swap is setup
 echo 'tmpfs /etc/jayoh/secrets tmpfs rw,nodev,nosuid,noexec,uid=jayoh,gid=jayoh,mode=700 0 0' |
-  sudo tee -a /etc/fstab
+  sudo tee -a /etc/fstab > /dev/null
 
-# And finally, disable default OpenSSH server
-sudo systemctl disable sshd.service
+# awslog agent's state file will be kept on volatile memory to ensure
+# the agent doesn't lock onto a log stream with specific instance ID.
+echo 'tmpfs /var/lib/awslogs tmpfs rw,nodev,nosuid,noexec,uid=root,gid=root,mode=700 0 0' |
+  sudo tee -a /etc/fstab > /dev/null
+
+# And finally, move the default OpenSSH to a different port
+sudo sed -i 's/#Port.*/Port 2222/' /etc/ssh/sshd_config
