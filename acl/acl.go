@@ -173,11 +173,12 @@ func (a *ACL) IsValidKey(user string, key ssh.PublicKey) bool {
 // IsAllowedHostAccess returns true if user is allowed to connect to host.
 func (a *ACL) IsAllowedHostAccess(user, host string) bool {
 	a.mu.Lock()
-	acl := *a
+	users := a.Users
+	rules := a.Rules
 	a.mu.Unlock()
 
-	ugroups := acl.Users[user].Groups
-	for _, r := range acl.Rules {
+	ugroups := users[user].Groups
+	for _, r := range rules {
 		// TODO this runs in O(n*m) - can use some speed up
 		for _, rg := range r.Groups {
 			for _, ug := range ugroups {

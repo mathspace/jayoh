@@ -243,8 +243,6 @@ func run() error {
 		}
 		go handleConn(conn)
 	}
-
-	return nil
 }
 
 func main() {

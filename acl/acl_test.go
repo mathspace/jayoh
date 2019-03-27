@@ -24,11 +24,11 @@ const (
   "rules": {
     "x": {
       "groups": ["a", "b"],
-      "host_patterns": ["10.0.0.0/24", "google.com", "20.10.10.10/32", "1.2.3.4"]
+      "host_patterns": ["10.0.0.0/24", "a.example.com", "30.20.10.10/32", "9.8.7.5"]
     },
     "y": {
       "groups": ["d"],
-      "host_patterns": ["10.0.0.0/24", "google.com", "20.10.10.10/32", "1.2.3.4"]
+      "host_patterns": ["20.0.0.0/24", "d.example.com", "20.10.10.10/32", "1.2.3.4"]
     }
   }
 }
@@ -47,32 +47,74 @@ func init() {
 	}
 }
 
-func TestIsValidPassword(t *testing.T) {
+func TestIsValidPasswordIncorrect(t *testing.T) {
 	if aclist.IsValidPassword("jim", []byte("badpassword")) {
-		t.FailNow()
+		t.Fail()
 	}
+}
+func TestIsValidPasswordCorrect(t *testing.T) {
 	if !aclist.IsValidPassword("jim", pass1) {
-		t.FailNow()
+		t.Fail()
 	}
+}
+func TestIsValidPasswordCorrect2(t *testing.T) {
 	if !aclist.IsValidPassword("jim", pass2) {
-		t.FailNow()
+		t.Fail()
 	}
+}
+func TestIsValidPasswordCrossUser(t *testing.T) {
 	if aclist.IsValidPassword("mike", pass1) {
-		t.FailNow()
+		t.Fail()
 	}
+}
+func TestIsValidPasswordCrossUser2(t *testing.T) {
 	if aclist.IsValidPassword("mike", pass1) {
-		t.FailNow()
+		t.Fail()
 	}
+}
+func TestIsValidPasswordBlank(t *testing.T) {
 	if aclist.IsValidPassword("jim", []byte("")) {
-		t.FailNow()
+		t.Fail()
 	}
+}
+func TestIsValidPasswordNil(t *testing.T) {
 	if aclist.IsValidPassword("jim", nil) {
-		t.FailNow()
+		t.Fail()
 	}
+}
+func TestIsValidPasswordBlankUser(t *testing.T) {
 	if aclist.IsValidPassword("", nil) {
-		t.FailNow()
+		t.Fail()
 	}
 }
 
-func TestIsAllowedHostAccess(t *testing.T) {
+func TestIsAllowedHostAccessCorrect(t *testing.T) {
+	if !aclist.IsAllowedHostAccess("jim", "10.0.0.66") {
+		t.Fail()
+	}
+}
+func TestIsAllowedHostAccessCorrect2(t *testing.T) {
+	if !aclist.IsAllowedHostAccess("jim", "30.20.10.10") {
+		t.Fail()
+	}
+}
+func TestIsAllowedHostAccessCorrect3(t *testing.T) {
+	if !aclist.IsAllowedHostAccess("jim", "a.example.com") {
+		t.Fail()
+	}
+}
+func TestIsAllowedHostAccessIncorrect(t *testing.T) {
+	if aclist.IsAllowedHostAccess("jim", "30.20.10.11") {
+		t.Fail()
+	}
+}
+func TestIsAllowedHostAccessIncorrect2(t *testing.T) {
+	if aclist.IsAllowedHostAccess("jim", "example.com") {
+		t.Fail()
+	}
+}
+func TestIsAllowedHostAccessIncorrect3(t *testing.T) {
+	if aclist.IsAllowedHostAccess("mike", "10.0.0.1") {
+		t.Fail()
+	}
 }
