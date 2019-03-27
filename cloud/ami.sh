@@ -142,7 +142,7 @@ sudo systemctl enable key_loader.service
 # S3. The S3 path is read from "jayoh/acl_s3_path" tag of the instance.
 
 cat <<"EOF" | sudo tee -a /etc/crontab > /dev/null
-*  *  *  *  * root sudo -u jayoh bash -xe -o pipefail -c 'aws s3 cp "$(/opt/get_own_tag jayoh/acl_s3_path)" /etc/jayoh/secrets/acl.json && systemctl reload jayoh.service'
+*  *  *  *  * root sudo -u jayoh bash -xe -o pipefail -c 'aws s3 cp "$(/opt/get_own_tag jayoh/acl_s3_path)" /etc/jayoh/secrets/acl.json' && systemctl reload jayoh.service
 EOF
 
 # tmpfs will hold its data in volatile memory and won't be written to disk when no swap is setup
