@@ -117,21 +117,6 @@ echo "$(
 EOF
 sudo chmod +x /opt/get_own_tag
 
-cat <<"EOF" | sudo tee /opt/save_param_from_tag > /dev/null
-#!/bin/bash
-set -ex -o pipefail
-aws ssm get-parameter --with-decryption --name "$(/opt/get_own_tag "$1")" |
-  jq -r .Parameter.Value > "$2"
-EOF
-sudo chmod +x /opt/save_param_from_tag
-
-cat <<"EOF" | sudo tee /opt/save_s3_obj_from_tag > /dev/null
-#!/bin/bash
-set -ex -o pipefail
-aws s3 cp "$(/opt/get_own_tag "$1")" "$2"
-EOF
-sudo chmod +x /opt/save_s3_obj_from_tag
-
 # Setup script to store server key in the right place on boot
 cat <<"EOF" | sudo tee /etc/systemd/system/key_loader.service > /dev/null
 [Unit]
@@ -141,7 +126,7 @@ Before=jayoh.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/save_param_from_tag jayoh/server_key_parameter_name /etc/jayoh/secrets/server_key
+ExecStart=/bin/bash -xe -o pipefail -c 'aws ssm get-parameter --with-decryption --name "$(/opt/get_own_tag jayoh/server_key_parameter_name)" | jq -r .Parameter.Value > /etc/jayoh/secrets/server_key'
 User=jayoh
 StandardOutput=syslog
 StandardError=syslog
@@ -157,7 +142,7 @@ sudo systemctl enable key_loader.service
 # S3. The S3 path is read from "jayoh/acl_s3_path" tag of the instance.
 
 cat <<"EOF" | sudo tee -a /etc/crontab > /dev/null
-*  *  *  *  * root sudo -u jayoh /opt/save_s3_obj_from_tag jayoh/acl_s3_path /etc/jayoh/secrets/acl.json && systemctl reload jayoh.service
+*  *  *  *  * root sudo -u jayoh bash -xe -o pipefail -c 'aws s3 cp "$(/opt/get_own_tag jayoh/acl_s3_path)" /etc/jayoh/secrets/acl.json && systemctl reload jayoh.service'
 EOF
 
 # tmpfs will hold its data in volatile memory and won't be written to disk when no swap is setup
