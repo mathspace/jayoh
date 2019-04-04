@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -12,7 +13,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -92,6 +92,9 @@ func publicKeyCallback(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissio
 
 // handleConn handles a new SSH connection
 func handleConn(c net.Conn) {
+	ctx, cancelFn := context.WithCancel(context.Background())
+	defer cancelFn()
+
 	log.Printf("remote %s: connected", c.RemoteAddr())
 	conn, chans, reqs, err := ssh.NewServerConn(c, sshServerConfig)
 	if err != nil {
@@ -105,7 +108,7 @@ func handleConn(c net.Conn) {
 		switch newChan.ChannelType() {
 
 		case "direct-tcpip":
-			go handleDirectTCP(conn, newChan)
+			go handleDirectTCP(ctx, conn, newChan)
 
 		default:
 			log.Printf("session %s: new channel \"%s\" not supported", sessionId(conn), newChan.ChannelType())
@@ -117,7 +120,7 @@ func handleConn(c net.Conn) {
 }
 
 // handleDirectTCP handles request to setup new SSH port forwarding channel
-func handleDirectTCP(conn *ssh.ServerConn, newChan ssh.NewChannel) {
+func handleDirectTCP(ctx context.Context, conn *ssh.ServerConn, newChan ssh.NewChannel) {
 
 	// Read out the destination host requested to connect to
 	pl := directTCPIPPayload{}
@@ -137,6 +140,7 @@ func handleDirectTCP(conn *ssh.ServerConn, newChan ssh.NewChannel) {
 	if err != nil {
 		log.Printf("session %s: %s", sessionId(conn), err)
 		newChan.Reject(ssh.ConnectionFailed, err.Error())
+		return
 	}
 
 	log.Printf("session %s: successful TCP connection to \"%s\" on port %d", sessionId(conn), pl.Host, pl.HostPort)
@@ -149,22 +153,23 @@ func handleDirectTCP(conn *ssh.ServerConn, newChan ssh.NewChannel) {
 	go ssh.DiscardRequests(reqs)
 
 	// Pipe data both ways between the SSH client and the remote host
-	wg := sync.WaitGroup{}
-	wg.Add(2)
+
+	connCtx, termConn := context.WithCancel(ctx)
 
 	go func() {
 		io.Copy(tcpConn, chans)
-		wg.Done()
+		termConn()
 	}()
 
 	go func() {
 		io.Copy(chans, tcpConn)
-		wg.Done()
+		termConn()
 	}()
 
-	wg.Wait()
+	<-connCtx.Done()
 	tcpConn.Close()
 	chans.Close()
+
 	log.Printf("session %s TCP connection to \"%s\" on port %d terminated", sessionId(conn), pl.Host, pl.HostPort)
 }
 
