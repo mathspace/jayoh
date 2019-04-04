@@ -33,15 +33,17 @@ var (
 
 	configPath = flag.String("config", "/etc/jayoh/config.json", "path to config file")
 	config     = struct {
-		ACLFile          string `json:"acl_file"`
-		ServerKeyFile    string `json:"server_key_file"`
-		Listen           string `json:"listen"`
-		MaxAuthTries     int    `json:"max_auth_tries"`
-		AuthFailureDelay int    `json:"auth_failure_delay"`
+		ACLFile              string `json:"acl_file"`
+		ServerKeyFile        string `json:"server_key_file"`
+		Listen               string `json:"listen"`
+		MaxAuthTries         int    `json:"max_auth_tries"`
+		AuthFailureDelay     int    `json:"auth_failure_delay"`
+		ConnKeepaliveMinutes uint   `json:"connection_keepalive_minutes"`
 	}{
-		Listen:           "127.0.0.1:2222",
-		MaxAuthTries:     6,
-		AuthFailureDelay: 5,
+		Listen:               "127.0.0.1:2222",
+		MaxAuthTries:         6,
+		AuthFailureDelay:     5,
+		ConnKeepaliveMinutes: 1,
 	}
 
 	sshServerConfig = &ssh.ServerConfig{
@@ -90,32 +92,83 @@ func publicKeyCallback(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissio
 	return nil, fmt.Errorf("login failed")
 }
 
+// isClientAlive sends a keep alive request to the client and return true
+// if client responds in timely manner, false otherwise
+func isClientAlive(ctx context.Context, conn ssh.Conn) bool {
+	tCtx, cancelFn := context.WithTimeout(ctx, time.Second*15)
+	defer cancelFn()
+	clientResponse := make(chan bool, 1)
+	go func() {
+		if _, _, err := conn.SendRequest("keepalive@jayoh", true, nil); err != nil {
+			clientResponse <- false
+			return
+		}
+		clientResponse <- true
+	}()
+	select {
+	case r := <-clientResponse:
+		return r
+	case <-tCtx.Done():
+		return false
+	}
+}
+
 // handleConn handles a new SSH connection
 func handleConn(c net.Conn) {
+	defer c.Close()
+
 	ctx, cancelFn := context.WithCancel(context.Background())
 	defer cancelFn()
 
 	log.Printf("remote %s: connected", c.RemoteAddr())
 	conn, chans, reqs, err := ssh.NewServerConn(c, sshServerConfig)
 	if err != nil {
-		log.Print(err)
+		log.Printf("remote %s: disconnected before authentication: %s", c.RemoteAddr(), err)
 		return
 	}
-	log.Printf("remote %s: logged in to session %s", c.RemoteAddr(), sessionId(conn))
+	defer conn.Close()
+	log.Printf("remote %s: logged in to session %s as user \"%s\"", c.RemoteAddr(), sessionId(conn), conn.User())
 	go ssh.DiscardRequests(reqs)
 
-	for newChan := range chans {
-		switch newChan.ChannelType() {
+	// Periodic liveness checks
+	go func() {
+		ticker := time.NewTicker(time.Minute * time.Duration(config.ConnKeepaliveMinutes))
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if !isClientAlive(ctx, conn) {
+					log.Printf("session %s: keep alive failed", sessionId(conn))
+					cancelFn()
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
-		case "direct-tcpip":
-			go handleDirectTCP(ctx, conn, newChan)
+NewChan:
+	for {
+		select {
+		case newChan := <-chans:
+			switch {
 
-		default:
-			log.Printf("session %s: new channel \"%s\" not supported", sessionId(conn), newChan.ChannelType())
-			go newChan.Reject(ssh.UnknownChannelType, "only tcp forwarding is supported")
+			case newChan == nil:
+				break NewChan
 
+			case newChan.ChannelType() == "direct-tcpip":
+				go handleDirectTCP(ctx, conn, newChan)
+
+			default:
+				log.Printf("session %s: new channel \"%s\" not supported", sessionId(conn), newChan.ChannelType())
+				go newChan.Reject(ssh.UnknownChannelType, "only tcp forwarding is supported")
+			}
+		case <-ctx.Done():
+			break NewChan
 		}
 	}
+
 	log.Printf("session %s: disconnected", sessionId(conn))
 }
 
@@ -131,6 +184,7 @@ func handleDirectTCP(ctx context.Context, conn *ssh.ServerConn, newChan ssh.NewC
 	}
 
 	if !accessControlList.IsAllowedHostAccess(conn.User(), pl.Host) {
+		log.Printf("session %s: connection to \"%s\" is not allowed for user \"%s\"", sessionId(conn), pl.Host, conn.User())
 		newChan.Reject(ssh.Prohibited, fmt.Sprintf("connection to \"%s\" is not allowed for user \"%s\"", pl.Host, conn.User()))
 		return
 	}
@@ -138,38 +192,35 @@ func handleDirectTCP(ctx context.Context, conn *ssh.ServerConn, newChan ssh.NewC
 	// Connect to the remote host
 	tcpConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", pl.Host, pl.HostPort))
 	if err != nil {
-		log.Printf("session %s: %s", sessionId(conn), err)
+		log.Printf("session %s: failed to connect to \"%s\" on port %d: %s", sessionId(conn), pl.Host, pl.HostPort, err)
 		newChan.Reject(ssh.ConnectionFailed, err.Error())
 		return
 	}
+	defer tcpConn.Close()
 
 	log.Printf("session %s: successful TCP connection to \"%s\" on port %d", sessionId(conn), pl.Host, pl.HostPort)
 
 	chans, reqs, err := newChan.Accept()
 	if err != nil {
-		log.Print(err)
+		log.Printf("session %s: failed to accept new connection request: %s", sessionId(conn), err)
 		return
 	}
+	defer chans.Close()
 	go ssh.DiscardRequests(reqs)
-
-	// Pipe data both ways between the SSH client and the remote host
 
 	connCtx, termConn := context.WithCancel(ctx)
 
+	// Pipe data both ways between the SSH client and the remote host
 	go func() {
 		io.Copy(tcpConn, chans)
 		termConn()
 	}()
-
 	go func() {
 		io.Copy(chans, tcpConn)
 		termConn()
 	}()
 
 	<-connCtx.Done()
-	tcpConn.Close()
-	chans.Close()
-
 	log.Printf("session %s TCP connection to \"%s\" on port %d terminated", sessionId(conn), pl.Host, pl.HostPort)
 }
 
