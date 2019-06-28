@@ -5,14 +5,14 @@
   "builders": [
     {
       "type": "amazon-ebs",
-      "source_ami": "ami-0019ef04ac50be30f",
       "source_ami_filter": {
         "filters": {
           "owner-alias": "amazon",
           "state": "available",
           "name": "amzn2-ami-hvm-*-x86_64-gp2"
         },
-        "most_recent": true
+        "most_recent": true,
+        "owners": ["amazon"]
       },
       "instance_type": "t2.micro",
       "ssh_username": "ec2-user",
