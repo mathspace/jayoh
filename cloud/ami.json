@@ -17,6 +17,7 @@
       "instance_type": "t2.micro",
       "ssh_username": "ec2-user",
       "ami_name": "jayoh SSH Jump Server {{user `version`}} {{timestamp}}",
+      "ami_regions": ["ap-southeast-2", "us-west-2"],
       "shutdown_behavior": "terminate",
       "tags": {
         "Name": "jayoh SSH Jump Server {{user `version`}}",
