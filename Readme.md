@@ -25,6 +25,14 @@ go build
 
 Above will create the single file binary `jayoh` in the root.
 
+# Build AMI image
+
+Packer is used to build AMIs in the regions defined in `ami/ami.json`:
+
+```sh
+./build sh
+```
+
 # Run
 
 **Generate a new server key:**
