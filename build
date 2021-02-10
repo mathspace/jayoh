@@ -2,9 +2,10 @@
 
 set -ex
 
-go build
-
 if [ "$1" == ami ]; then
+  GOOS=linux GOARCH=amd64 go build
   cd cloud
   packer build -var version="$(git rev-parse --short HEAD)" ami.json
+else
+  go build
 fi
