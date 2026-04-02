@@ -37,9 +37,12 @@ type serverConfig struct {
 }
 
 var (
-	// Recommended key exchange algorithms, by ssh-audit
+	// Prefer OpenSSH's post-quantum hybrid KEX while keeping a classical fallback
+	// for older clients. The ssh package adds the libssh curve25519 alias during
+	// negotiation for backward compatibility.
 	recommendedKexAlgos = []string{
-		"curve25519-sha256@libssh.org",
+		ssh.KeyExchangeMLKEM768X25519,
+		ssh.KeyExchangeCurve25519,
 	}
 	// Recommended MACs, by ssh-audit
 	recommendedMACs = []string{
@@ -60,6 +63,8 @@ var (
 		dialer := net.Dialer{Timeout: outboundDialTimeout}
 		return dialer.DialContext(ctx, network, address)
 	}
+	newSSHServerConn       = ssh.NewServerConn
+	sleepBeforeAcceptRetry = time.Sleep
 )
 
 // directTCPIPPayload holds the extra payload of a direct-tcpip SSH
@@ -202,7 +207,7 @@ func handleConn(c net.Conn) {
 		log.Printf("remote %s: failed to set handshake deadline: %s", c.RemoteAddr(), err)
 		return
 	}
-	conn, chans, reqs, err := ssh.NewServerConn(c, sshServerConfig)
+	conn, chans, reqs, err := newSSHServerConn(c, sshServerConfig)
 	if err != nil {
 		log.Printf("remote %s: disconnected before authentication: %s", c.RemoteAddr(), err)
 		return
@@ -336,7 +341,7 @@ func acceptLoop(listener net.Listener, handler func(net.Conn)) error {
 				return nil
 			}
 			log.Printf("accept failed: %s", err)
-			time.Sleep(acceptRetryDelay)
+			sleepBeforeAcceptRetry(acceptRetryDelay)
 			continue
 		}
 		if conn == nil {

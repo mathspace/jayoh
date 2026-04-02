@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,14 @@ func TestApplySSHServerConfigUsesLoadedMaxAuthTries(t *testing.T) {
 
 	if sshServerConfig.MaxAuthTries != 1 {
 		t.Fatalf("max auth tries = %d, want 1", sshServerConfig.MaxAuthTries)
+	}
+
+	wantKex := []string{
+		ssh.KeyExchangeMLKEM768X25519,
+		ssh.KeyExchangeCurve25519,
+	}
+	if !slices.Equal(sshServerConfig.KeyExchanges, wantKex) {
+		t.Fatalf("key exchanges = %v, want %v", sshServerConfig.KeyExchanges, wantKex)
 	}
 }
 
