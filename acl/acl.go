@@ -1,3 +1,5 @@
+// Package acl provides an ACL for controlling access to hosts based on user groups,
+// host patterns, and authentication credentials (passwords and public keys).
 package acl
 
 import (
