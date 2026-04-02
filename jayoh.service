@@ -12,8 +12,8 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 StandardOutput=syslog
 StandardError=syslog
 SyslogIdentifier=jayoh
-CPUQuota=5%
-MemoryLimit=50M
+CPUQuota=50%
+MemoryLimit=200M
 
 [Install]
 WantedBy=multi-user.target

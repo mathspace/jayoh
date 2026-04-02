@@ -3,6 +3,8 @@ package acl
 import (
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -47,6 +49,16 @@ func init() {
 	}
 }
 
+func mustParsePublicKey(t *testing.T, key string) ssh.PublicKey {
+	t.Helper()
+
+	pk, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key))
+	if err != nil {
+		t.Fatalf("parse authorized key: %v", err)
+	}
+	return pk
+}
+
 func TestIsValidPasswordIncorrect(t *testing.T) {
 	if aclist.IsValidPassword("jim", []byte("badpassword")) {
 		t.Fail()
@@ -67,11 +79,13 @@ func TestIsValidPasswordCrossUser(t *testing.T) {
 		t.Fail()
 	}
 }
-func TestIsValidPasswordCrossUser2(t *testing.T) {
-	if aclist.IsValidPassword("mike", pass1) {
+
+func TestIsValidKeyCorrect(t *testing.T) {
+	if !aclist.IsValidKey("jim", mustParsePublicKey(t, "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCv7SY7afyoCTInLoTGGlZtHmb1EguT9ZMUAjjcKDZOT0wTR30hcjt9D1NvzYPrMK4Lo+eksTx85awwCY78Nxc20UnsBCKB7LEUcfG46W8N2XvF8yi48FbEccNRPHsVenGy9mUcM4ZZX+2mQm69iqjdXOjLxzesiahJcBHaLVVnOYC/WyleNvKL/H3PP0TPOVIJHWBwBUHrDps1Z1ODzvUP7t/LRde/lE/thfUScBjznuraGLhEGdhNkVkqQYLox0OBODukRywsQxtz7eP9cCgbH0NNAs2vaFmtkCYuHdFzuT0gbBIugSkm123nK4BOuftGWhvLaBOe7t8+NIeLtF5x")) {
 		t.Fail()
 	}
 }
+
 func TestIsValidPasswordBlank(t *testing.T) {
 	if aclist.IsValidPassword("jim", []byte("")) {
 		t.Fail()
@@ -116,5 +130,20 @@ func TestIsAllowedHostAccessIncorrect2(t *testing.T) {
 func TestIsAllowedHostAccessIncorrect3(t *testing.T) {
 	if aclist.IsAllowedHostAccess("mike", "10.0.0.1") {
 		t.Fail()
+	}
+}
+
+func TestLoadKeepsExistingACLOnError(t *testing.T) {
+	a := &ACL{}
+	if err := a.Load(strings.NewReader(aclistStr)); err != nil {
+		t.Fatalf("initial load: %v", err)
+	}
+
+	if err := a.Load(strings.NewReader("{")); err == nil {
+		t.Fatal("expected invalid ACL load to fail")
+	}
+
+	if !a.IsAllowedHostAccess("jim", "10.0.0.66") {
+		t.Fatal("expected previous ACL to remain active after failed load")
 	}
 }

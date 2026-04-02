@@ -27,10 +27,10 @@ Above will create the single file binary `jayoh` in the root.
 
 # Build AMI image
 
-Packer is used to build AMIs in the regions defined in `ami/ami.json`:
+Packer is used to build AMIs in the regions defined in `cloud/ami.json`:
 
 ```sh
-./build sh
+./build ami
 ```
 
 # Run
@@ -77,11 +77,13 @@ Few notes:
 * `ssh-ed25519 AAAAC3N...` is a SSH public key (usually found under
   `~/.ssh/id_rsa.pub`.
 * The ACL defines a single rule called `all-local` (this is just a
-  label) that allows all users belonging to group `dev` to access all
-  IPs under the `127.0.0.0/8` subnet and the exact host name
+  label) that allows all users belonging to group `dev` to access any
+  TCP port on IPs under the `127.0.0.0/8` subnet and the exact host name
   `www.google.com`.
 * There is currently no way to specify wildcard domain names, only IP
   ranges.
+* ACL rules are host-based only. If a host matches, users can forward to
+  any TCP port on that host.
 
 **Create the main configuration file:**
 

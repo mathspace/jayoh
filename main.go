@@ -20,6 +20,21 @@ import (
 	"github.com/mathspace/jayoh/acl"
 )
 
+const (
+	preAuthHandshakeTimeout = 15 * time.Second
+	outboundDialTimeout     = 15 * time.Second
+	acceptRetryDelay        = 50 * time.Millisecond
+)
+
+type serverConfig struct {
+	ACLFile              string `json:"acl_file"`
+	ServerKeyFile        string `json:"server_key_file"`
+	Listen               string `json:"listen"`
+	MaxAuthTries         int    `json:"max_auth_tries"`
+	AuthFailureDelay     int    `json:"auth_failure_delay"`
+	ConnKeepaliveMinutes uint   `json:"connection_keepalive_minutes"`
+}
+
 var (
 	// Recommended key exchange algorithms, by ssh-audit
 	recommendedKexAlgos = []string{
@@ -31,19 +46,7 @@ var (
 	}
 
 	configPath = flag.String("config", "/etc/jayoh/config.json", "path to config file")
-	config     = struct {
-		ACLFile              string `json:"acl_file"`
-		ServerKeyFile        string `json:"server_key_file"`
-		Listen               string `json:"listen"`
-		MaxAuthTries         int    `json:"max_auth_tries"`
-		AuthFailureDelay     int    `json:"auth_failure_delay"`
-		ConnKeepaliveMinutes uint   `json:"connection_keepalive_minutes"`
-	}{
-		Listen:               "127.0.0.1:2222",
-		MaxAuthTries:         6,
-		AuthFailureDelay:     5,
-		ConnKeepaliveMinutes: 1,
-	}
+	config     = defaultConfig()
 
 	sshServerConfig = &ssh.ServerConfig{
 		PasswordCallback:  passwordCallback,
@@ -51,6 +54,11 @@ var (
 	}
 
 	accessControlList = &acl.ACL{}
+
+	dialTargetContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialer := net.Dialer{Timeout: outboundDialTimeout}
+		return dialer.DialContext(ctx, network, address)
+	}
 )
 
 // directTCPIPPayload holds the extra payload of a direct-tcpip SSH
@@ -65,6 +73,63 @@ type directTCPIPPayload struct {
 // sessionID returns the session ID of the given SSH connection in hex string
 func sessionID(c ssh.Conn) string {
 	return hex.EncodeToString(c.SessionID())
+}
+
+func defaultConfig() serverConfig {
+	return serverConfig{
+		Listen:               "127.0.0.1:2222",
+		MaxAuthTries:         6,
+		AuthFailureDelay:     5,
+		ConnKeepaliveMinutes: 1,
+	}
+}
+
+func loadConfig(path string) (serverConfig, error) {
+	cfg := defaultConfig()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return serverConfig{}, err
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return serverConfig{}, err
+	}
+	if err := validateConfig(cfg); err != nil {
+		return serverConfig{}, err
+	}
+	return cfg, nil
+}
+
+func validateConfig(cfg serverConfig) error {
+	switch {
+	case cfg.ServerKeyFile == "":
+		return fmt.Errorf("server_key_file is required")
+	case cfg.ACLFile == "":
+		return fmt.Errorf("acl_file is required")
+	case cfg.Listen == "":
+		return fmt.Errorf("listen is required")
+	case cfg.MaxAuthTries < 1:
+		return fmt.Errorf("max_auth_tries must be greater than 0")
+	case cfg.AuthFailureDelay < 0:
+		return fmt.Errorf("auth_failure_delay must be greater than or equal to 0")
+	case cfg.ConnKeepaliveMinutes == 0:
+		return fmt.Errorf("connection_keepalive_minutes must be greater than 0")
+	default:
+		return nil
+	}
+}
+
+func applySSHServerConfig(cfg serverConfig) {
+	sshServerConfig.KeyExchanges = recommendedKexAlgos
+	sshServerConfig.MACs = recommendedMACs
+	sshServerConfig.MaxAuthTries = cfg.MaxAuthTries
+}
+
+func setPreAuthDeadline(c net.Conn) error {
+	return c.SetDeadline(time.Now().Add(preAuthHandshakeTimeout))
+}
+
+func clearConnDeadline(c net.Conn) error {
+	return c.SetDeadline(time.Time{})
 }
 
 // passwordCallback is called when a password login is attempted
@@ -114,18 +179,29 @@ func isClientAlive(ctx context.Context, conn ssh.Conn) bool {
 
 // handleConn handles a new SSH connection
 func handleConn(c net.Conn) {
+	if c == nil {
+		return
+	}
 	defer c.Close()
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	defer cancelFn()
 
 	log.Printf("remote %s: connected", c.RemoteAddr())
+	if err := setPreAuthDeadline(c); err != nil {
+		log.Printf("remote %s: failed to set handshake deadline: %s", c.RemoteAddr(), err)
+		return
+	}
 	conn, chans, reqs, err := ssh.NewServerConn(c, sshServerConfig)
 	if err != nil {
 		log.Printf("remote %s: disconnected before authentication: %s", c.RemoteAddr(), err)
 		return
 	}
 	defer conn.Close()
+	if err := clearConnDeadline(c); err != nil {
+		log.Printf("session %s: failed to clear handshake deadline: %s", sessionID(conn), err)
+		return
+	}
 	log.Printf("remote %s: logged in to session %s as user \"%s\"", c.RemoteAddr(), sessionID(conn), conn.User())
 	go ssh.DiscardRequests(reqs)
 
@@ -189,7 +265,7 @@ func handleDirectTCP(ctx context.Context, conn *ssh.ServerConn, newChan ssh.NewC
 	}
 
 	// Connect to the remote host
-	tcpConn, err := net.Dial("tcp", net.JoinHostPort(pl.Host, fmt.Sprintf("%d", pl.HostPort)))
+	tcpConn, err := dialTarget(ctx, pl.Host, pl.HostPort)
 	if err != nil {
 		log.Printf("session %s: failed to connect to \"%s\" on port %d: %s", sessionID(conn), pl.Host, pl.HostPort, err)
 		newChan.Reject(ssh.ConnectionFailed, err.Error())
@@ -235,25 +311,40 @@ func reloadACL() error {
 	return nil
 }
 
+func dialTarget(ctx context.Context, host string, port uint32) (net.Conn, error) {
+	return dialTargetContext(ctx, "tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
+}
+
+func acceptLoop(listener net.Listener, handler func(net.Conn)) error {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+				log.Printf("accept failed: %s", err)
+				time.Sleep(acceptRetryDelay)
+				continue
+			}
+			return err
+		}
+		if conn == nil {
+			continue
+		}
+		go handler(conn)
+	}
+}
+
 func run() error {
 
 	flag.Parse()
-	sshServerConfig.KeyExchanges = recommendedKexAlgos
-	sshServerConfig.MACs = recommendedMACs
-	sshServerConfig.MaxAuthTries = config.MaxAuthTries
 
 	// Load config file
 	{
-		b, err := os.ReadFile(*configPath)
+		cfg, err := loadConfig(*configPath)
 		if err != nil {
 			return err
 		}
-		if err := json.Unmarshal(b, &config); err != nil {
-			return err
-		}
-		if config.ServerKeyFile == "" || config.ACLFile == "" {
-			return fmt.Errorf("server_key_file and acl_file are required")
-		}
+		config = cfg
+		applySSHServerConfig(config)
 	}
 
 	{
@@ -291,13 +382,7 @@ func run() error {
 	}
 	defer listener.Close()
 	log.Printf("listening on %s for connections...", config.Listen)
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Print(err)
-		}
-		go handleConn(conn)
-	}
+	return acceptLoop(listener, handleConn)
 }
 
 func main() {

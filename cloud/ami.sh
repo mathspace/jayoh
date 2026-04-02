@@ -11,8 +11,13 @@ cat <<"EOF" | sudo tee /opt/set_aws_default_region > /dev/null
 #!/bin/bash
 set -xe -o pipefail
 
-METAURL='http://169.254.169.254/latest/dynamic/instance-identity/document'
-REGION="$(curl -s $METAURL | jq -r .region)"
+METABASE='http://169.254.169.254'
+TOKEN="$(curl -fsS --connect-timeout 2 -X PUT "$METABASE/latest/api/token" \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')"
+INSTANCE_DOCUMENT="$(curl -fsS --connect-timeout 2 \
+  -H "X-aws-ec2-metadata-token: $TOKEN" \
+  "$METABASE/latest/dynamic/instance-identity/document")"
+REGION="$(printf '%s' "$INSTANCE_DOCUMENT" | jq -r .region)"
 
 sed -i '/^AWS_DEFAULT_REGION/d' /etc/environment
 echo "AWS_DEFAULT_REGION=$REGION" >> /etc/environment
@@ -107,11 +112,17 @@ cat <<"EOF" | sudo tee /opt/get_own_tag > /dev/null
 #!/bin/bash
 set -ex -o pipefail
 
-METAURL='http://169.254.169.254/latest/dynamic/instance-identity/document'
-INSTANCE_ID=$(curl -s $METAURL | jq -r .instanceId)
+METABASE='http://169.254.169.254'
+TOKEN="$(curl -fsS --connect-timeout 2 -X PUT "$METABASE/latest/api/token" \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')"
+INSTANCE_DOCUMENT="$(curl -fsS --connect-timeout 2 \
+  -H "X-aws-ec2-metadata-token: $TOKEN" \
+  "$METABASE/latest/dynamic/instance-identity/document")"
+INSTANCE_ID="$(printf '%s' "$INSTANCE_DOCUMENT" | jq -r .instanceId)"
+REGION="$(printf '%s' "$INSTANCE_DOCUMENT" | jq -r .region)"
 
 echo "$(
-  aws ec2 describe-instances --filters=Name=instance-id,Values=$INSTANCE_ID |
+  aws ec2 describe-instances --region "$REGION" --filters=Name=instance-id,Values=$INSTANCE_ID |
     jq -r '.Reservations[0].Instances[].Tags[] | select(.Key=="'"$1"'") | .Value'
 )"
 EOF

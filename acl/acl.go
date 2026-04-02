@@ -62,7 +62,7 @@ func (h *HostPattern) Match(host string) bool {
 
 // Rule associates a set of groups with a set of host patterns
 // such that any user belonging to any of the groups is allowed
-// to connect to hosts matching any of the host patterns.
+// to connect to any TCP port on hosts matching any of the host patterns.
 type Rule struct {
 	Groups       []string      `json:"groups"`
 	HostPatterns []HostPattern `json:"host_patterns"`
@@ -115,9 +115,29 @@ type User struct {
 // ACL is a set of rules and associations that define
 // which users are allowed to connect to which hosts.
 type ACL struct {
-	mu    sync.Mutex
-	Rules map[string]Rule `json:"rules"`
-	Users map[string]User `json:"users"`
+	mu                        sync.RWMutex
+	Rules                     map[string]Rule `json:"rules"`
+	Users                     map[string]User `json:"users"`
+	allowedHostPatternsByUser map[string][]HostPattern
+}
+
+func buildAllowedHostPatternsByUser(users map[string]User, rules map[string]Rule) map[string][]HostPattern {
+	hostPatternsByGroup := make(map[string][]HostPattern)
+	for _, rule := range rules {
+		for _, group := range rule.Groups {
+			hostPatternsByGroup[group] = append(hostPatternsByGroup[group], rule.HostPatterns...)
+		}
+	}
+
+	allowedPatterns := make(map[string][]HostPattern, len(users))
+	for userName, user := range users {
+		patterns := make([]HostPattern, 0)
+		for _, group := range user.Groups {
+			patterns = append(patterns, hostPatternsByGroup[group]...)
+		}
+		allowedPatterns[userName] = patterns
+	}
+	return allowedPatterns
 }
 
 // Load replaces the current ACL with one from the given JSON file.
@@ -127,18 +147,20 @@ func (a *ACL) Load(r io.Reader) error {
 	if err := json.NewDecoder(r).Decode(&newACL); err != nil {
 		return err
 	}
+	newACL.allowedHostPatternsByUser = buildAllowedHostPatternsByUser(newACL.Users, newACL.Rules)
 	a.mu.Lock()
 	a.Users = newACL.Users
 	a.Rules = newACL.Rules
+	a.allowedHostPatternsByUser = newACL.allowedHostPatternsByUser
 	a.mu.Unlock()
 	return nil
 }
 
 // IsValidPassword returns true if a matching user and password is found.
 func (a *ACL) IsValidPassword(user string, password []byte) bool {
-	a.mu.Lock()
+	a.mu.RLock()
 	users := a.Users
-	a.mu.Unlock()
+	a.mu.RUnlock()
 
 	u, ok := users[user]
 	if !ok {
@@ -154,9 +176,9 @@ func (a *ACL) IsValidPassword(user string, password []byte) bool {
 
 // IsValidKey returns true if a matching user and key is found.
 func (a *ACL) IsValidKey(user string, key ssh.PublicKey) bool {
-	a.mu.Lock()
+	a.mu.RLock()
 	users := a.Users
-	a.mu.Unlock()
+	a.mu.RUnlock()
 
 	u, ok := users[user]
 	if !ok {
@@ -172,28 +194,13 @@ func (a *ACL) IsValidKey(user string, key ssh.PublicKey) bool {
 
 // IsAllowedHostAccess returns true if user is allowed to connect to host.
 func (a *ACL) IsAllowedHostAccess(user, host string) bool {
-	a.mu.Lock()
-	users := a.Users
-	rules := a.Rules
-	a.mu.Unlock()
+	a.mu.RLock()
+	patterns := a.allowedHostPatternsByUser[user]
+	a.mu.RUnlock()
 
-	ugroups := users[user].Groups
-	for _, r := range rules {
-		// TODO this runs in O(n*m) - can use some speed up
-		for _, rg := range r.Groups {
-			for _, ug := range ugroups {
-				if ug == rg {
-					goto MatchedRuleGroup
-				}
-			}
-		}
-		continue
-
-	MatchedRuleGroup:
-		for _, hp := range r.HostPatterns {
-			if hp.Match(host) {
-				return true
-			}
+	for _, hp := range patterns {
+		if hp.Match(host) {
+			return true
 		}
 	}
 
