@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	preAuthHandshakeTimeout = 15 * time.Second
-	outboundDialTimeout     = 15 * time.Second
+	preAuthHandshakeTimeout = 5 * time.Second
+	outboundDialTimeout     = 10 * time.Second
 	acceptRetryDelay        = 50 * time.Millisecond
 )
 
