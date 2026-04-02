@@ -147,3 +147,33 @@ func TestLoadKeepsExistingACLOnError(t *testing.T) {
 		t.Fatal("expected previous ACL to remain active after failed load")
 	}
 }
+
+func TestIsAllowedHostAccessReflectsExportedFieldChanges(t *testing.T) {
+	a := &ACL{
+		Users: map[string]User{
+			"jim": {Groups: []string{"dev"}},
+		},
+		Rules: map[string]Rule{
+			"allow": {
+				Groups:       []string{"dev"},
+				HostPatterns: []HostPattern{{v: "db.internal"}},
+			},
+		},
+	}
+
+	if !a.IsAllowedHostAccess("jim", "db.internal") {
+		t.Fatal("expected access check to use the current exported fields")
+	}
+
+	a.Rules["allow"] = Rule{
+		Groups:       []string{"dev"},
+		HostPatterns: []HostPattern{{v: "cache.internal"}},
+	}
+
+	if a.IsAllowedHostAccess("jim", "db.internal") {
+		t.Fatal("expected access check to stop using stale rule state after rule mutation")
+	}
+	if !a.IsAllowedHostAccess("jim", "cache.internal") {
+		t.Fatal("expected access check to reflect updated rule state")
+	}
+}

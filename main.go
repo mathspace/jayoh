@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -70,8 +71,17 @@ type directTCPIPPayload struct {
 	OriginPort uint32
 }
 
+type sessionIDProvider interface {
+	SessionID() []byte
+}
+
+type sshSession interface {
+	sessionIDProvider
+	User() string
+}
+
 // sessionID returns the session ID of the given SSH connection in hex string
-func sessionID(c ssh.Conn) string {
+func sessionID(c sessionIDProvider) string {
 	return hex.EncodeToString(c.SessionID())
 }
 
@@ -249,7 +259,10 @@ NewChan:
 
 // handleDirectTCP handles request to setup new SSH port forwarding channel
 func handleDirectTCP(ctx context.Context, conn *ssh.ServerConn, newChan ssh.NewChannel) {
+	handleDirectTCPWithSession(ctx, conn, newChan)
+}
 
+func handleDirectTCPWithSession(ctx context.Context, conn sshSession, newChan ssh.NewChannel) {
 	// Read out the destination host requested to connect to
 	pl := directTCPIPPayload{}
 	if err := ssh.Unmarshal(newChan.ExtraData(), &pl); err != nil {
@@ -319,12 +332,12 @@ func acceptLoop(listener net.Listener, handler func(net.Conn)) error {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
-				log.Printf("accept failed: %s", err)
-				time.Sleep(acceptRetryDelay)
-				continue
+			if errors.Is(err, net.ErrClosed) {
+				return nil
 			}
-			return err
+			log.Printf("accept failed: %s", err)
+			time.Sleep(acceptRetryDelay)
+			continue
 		}
 		if conn == nil {
 			continue

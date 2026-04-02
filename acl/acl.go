@@ -115,29 +115,9 @@ type User struct {
 // ACL is a set of rules and associations that define
 // which users are allowed to connect to which hosts.
 type ACL struct {
-	mu                        sync.RWMutex
-	Rules                     map[string]Rule `json:"rules"`
-	Users                     map[string]User `json:"users"`
-	allowedHostPatternsByUser map[string][]HostPattern
-}
-
-func buildAllowedHostPatternsByUser(users map[string]User, rules map[string]Rule) map[string][]HostPattern {
-	hostPatternsByGroup := make(map[string][]HostPattern)
-	for _, rule := range rules {
-		for _, group := range rule.Groups {
-			hostPatternsByGroup[group] = append(hostPatternsByGroup[group], rule.HostPatterns...)
-		}
-	}
-
-	allowedPatterns := make(map[string][]HostPattern, len(users))
-	for userName, user := range users {
-		patterns := make([]HostPattern, 0)
-		for _, group := range user.Groups {
-			patterns = append(patterns, hostPatternsByGroup[group]...)
-		}
-		allowedPatterns[userName] = patterns
-	}
-	return allowedPatterns
+	mu    sync.RWMutex
+	Rules map[string]Rule `json:"rules"`
+	Users map[string]User `json:"users"`
 }
 
 // Load replaces the current ACL with one from the given JSON file.
@@ -147,11 +127,9 @@ func (a *ACL) Load(r io.Reader) error {
 	if err := json.NewDecoder(r).Decode(&newACL); err != nil {
 		return err
 	}
-	newACL.allowedHostPatternsByUser = buildAllowedHostPatternsByUser(newACL.Users, newACL.Rules)
 	a.mu.Lock()
 	a.Users = newACL.Users
 	a.Rules = newACL.Rules
-	a.allowedHostPatternsByUser = newACL.allowedHostPatternsByUser
 	a.mu.Unlock()
 	return nil
 }
@@ -195,12 +173,36 @@ func (a *ACL) IsValidKey(user string, key ssh.PublicKey) bool {
 // IsAllowedHostAccess returns true if user is allowed to connect to host.
 func (a *ACL) IsAllowedHostAccess(user, host string) bool {
 	a.mu.RLock()
-	patterns := a.allowedHostPatternsByUser[user]
+	users := a.Users
+	rules := a.Rules
 	a.mu.RUnlock()
 
-	for _, hp := range patterns {
-		if hp.Match(host) {
-			return true
+	u, ok := users[user]
+	if !ok {
+		return false
+	}
+
+	userGroups := make(map[string]struct{}, len(u.Groups))
+	for _, group := range u.Groups {
+		userGroups[group] = struct{}{}
+	}
+
+	for _, rule := range rules {
+		matchedRule := false
+		for _, group := range rule.Groups {
+			if _, ok := userGroups[group]; ok {
+				matchedRule = true
+				break
+			}
+		}
+		if !matchedRule {
+			continue
+		}
+
+		for _, hp := range rule.HostPatterns {
+			if hp.Match(host) {
+				return true
+			}
 		}
 	}
 

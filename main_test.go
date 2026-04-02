@@ -5,9 +5,15 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/mathspace/jayoh/acl"
 )
 
 func TestLoadConfigUsesDefaultsAndFileValues(t *testing.T) {
@@ -93,6 +99,57 @@ func TestSetAndClearPreAuthDeadline(t *testing.T) {
 	}
 }
 
+func TestHandleConnSetsPreAuthDeadlineBeforeHandshake(t *testing.T) {
+	originalNewSSHServerConn := newSSHServerConn
+	t.Cleanup(func() {
+		newSSHServerConn = originalNewSSHServerConn
+	})
+
+	config = defaultConfig()
+	conn := &recordingConn{}
+	called := false
+	newSSHServerConn = func(conn net.Conn, _ *ssh.ServerConfig) (*ssh.ServerConn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
+		called = true
+		recording, ok := conn.(*recordingConn)
+		if !ok {
+			t.Fatalf("unexpected connection type %T", conn)
+		}
+		if recording.deadline.IsZero() {
+			t.Fatal("expected handleConn to set a pre-auth deadline before the SSH handshake")
+		}
+		return nil, nil, nil, errors.New("stop handshake")
+	}
+
+	handleConn(conn)
+
+	if !called {
+		t.Fatal("expected handleConn to invoke the SSH handshake")
+	}
+}
+
+func TestHandleConnClearsPreAuthDeadlineAfterHandshake(t *testing.T) {
+	originalNewSSHServerConn := newSSHServerConn
+	t.Cleanup(func() {
+		newSSHServerConn = originalNewSSHServerConn
+	})
+
+	config = defaultConfig()
+	conn := &recordingConn{}
+	reqs := make(chan *ssh.Request)
+	close(reqs)
+	chans := make(chan ssh.NewChannel)
+	close(chans)
+	newSSHServerConn = func(net.Conn, *ssh.ServerConfig) (*ssh.ServerConn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
+		return &ssh.ServerConn{Conn: sshConnStub{user: "mike", sessionID: []byte("session")}}, chans, reqs, nil
+	}
+
+	handleConn(conn)
+
+	if !conn.deadline.IsZero() {
+		t.Fatal("expected handleConn to clear the pre-auth deadline after a successful handshake")
+	}
+}
+
 func TestDialTargetUsesContextAwareDialer(t *testing.T) {
 	originalDialer := dialTargetContext
 	t.Cleanup(func() {
@@ -132,14 +189,77 @@ func TestDialTargetUsesContextAwareDialer(t *testing.T) {
 	}
 }
 
+func TestHandleDirectTCPUsesContextAwareDialer(t *testing.T) {
+	originalDialer := dialTargetContext
+	originalACL := accessControlList
+	t.Cleanup(func() {
+		dialTargetContext = originalDialer
+		accessControlList = originalACL
+	})
+
+	allowedACL := &acl.ACL{}
+	if err := allowedACL.Load(strings.NewReader(`{
+		"users": {
+			"mike": {
+				"groups": ["dev"]
+			}
+		},
+		"rules": {
+			"dev": {
+				"groups": ["dev"],
+				"host_patterns": ["db.internal"]
+			}
+		}
+	}`)); err != nil {
+		t.Fatalf("load ACL: %v", err)
+	}
+	accessControlList = allowedACL
+
+	type ctxKey string
+	ctx := context.WithValue(context.Background(), ctxKey("request-id"), "456")
+	var gotCtx context.Context
+	var gotAddress string
+	dialTargetContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		gotCtx = ctx
+		gotAddress = address
+		return nil, errors.New("dial blocked for test")
+	}
+
+	newChan := &recordingNewChannel{
+		channelType: "direct-tcpip",
+		extraData: ssh.Marshal(directTCPIPPayload{
+			Host:     "db.internal",
+			HostPort: 5432,
+		}),
+	}
+
+	handleDirectTCPWithSession(ctx, sshConnStub{user: "mike", sessionID: []byte("session")}, newChan)
+
+	if gotCtx != ctx {
+		t.Fatal("expected handleDirectTCP to pass the caller context to the dialer")
+	}
+	if gotAddress != "db.internal:5432" {
+		t.Fatalf("address = %q, want db.internal:5432", gotAddress)
+	}
+	if newChan.rejectedReason != ssh.ConnectionFailed {
+		t.Fatalf("reject reason = %v, want %v", newChan.rejectedReason, ssh.ConnectionFailed)
+	}
+}
+
 func TestAcceptLoopSkipsTemporaryErrors(t *testing.T) {
+	originalSleep := sleepBeforeAcceptRetry
+	t.Cleanup(func() {
+		sleepBeforeAcceptRetry = originalSleep
+	})
+	sleepBeforeAcceptRetry = func(time.Duration) {}
+
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
 
-	fatalErr := errors.New("listener closed")
+	fatalErr := net.ErrClosed
 	listener := &stubListener{
 		results: []acceptResult{
-			{err: temporaryNetError{message: "temporary failure"}},
+			{err: errors.New("temporary failure")},
 			{conn: serverConn},
 			{err: fatalErr},
 		},
@@ -150,8 +270,8 @@ func TestAcceptLoopSkipsTemporaryErrors(t *testing.T) {
 		handled <- conn
 		conn.Close()
 	})
-	if !errors.Is(err, fatalErr) {
-		t.Fatalf("acceptLoop error = %v, want %v", err, fatalErr)
+	if err != nil {
+		t.Fatalf("acceptLoop error = %v, want nil", err)
 	}
 
 	select {
@@ -161,6 +281,45 @@ func TestAcceptLoopSkipsTemporaryErrors(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected acceptLoop to handle a connection after the temporary error")
+	}
+}
+
+func TestAcceptLoopStopsOnClosedListener(t *testing.T) {
+	listener := &stubListener{
+		results: []acceptResult{
+			{err: net.ErrClosed},
+		},
+	}
+
+	if err := acceptLoop(listener, func(net.Conn) {}); err != nil {
+		t.Fatalf("acceptLoop error = %v, want nil", err)
+	}
+}
+
+func TestAMIProvisioningScriptUsesIMDSv2AndExplicitRegion(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("cloud", "ami.sh"))
+	if err != nil {
+		t.Fatalf("read ami script: %v", err)
+	}
+
+	content := string(script)
+	for _, expected := range []string{
+		"/latest/api/token",
+		"X-aws-ec2-metadata-token",
+		"/opt/get_own_region",
+		"aws ssm get-parameter --region \"$(/opt/get_own_region)\"",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("ami.sh is missing %q", expected)
+		}
+	}
+}
+
+func TestAMIProvisioningScriptParses(t *testing.T) {
+	cmd := exec.Command("bash", "-n", filepath.Join("cloud", "ami.sh"))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bash -n cloud/ami.sh: %v\n%s", err, output)
 	}
 }
 
@@ -182,6 +341,24 @@ type acceptResult struct {
 	err  error
 }
 
+type recordingNewChannel struct {
+	channelType    string
+	extraData      []byte
+	rejectedReason ssh.RejectionReason
+	rejectedMsg    string
+}
+
+func (c *recordingNewChannel) Accept() (ssh.Channel, <-chan *ssh.Request, error) {
+	return nil, nil, errors.New("unexpected accept")
+}
+func (c *recordingNewChannel) Reject(reason ssh.RejectionReason, message string) error {
+	c.rejectedReason = reason
+	c.rejectedMsg = message
+	return nil
+}
+func (c *recordingNewChannel) ChannelType() string { return c.channelType }
+func (c *recordingNewChannel) ExtraData() []byte   { return c.extraData }
+
 type stubListener struct {
 	results []acceptResult
 }
@@ -200,13 +377,25 @@ func (l *stubListener) Addr() net.Addr {
 	return stubAddr("listener")
 }
 
-type temporaryNetError struct {
-	message string
+type sshConnStub struct {
+	user      string
+	sessionID []byte
 }
 
-func (e temporaryNetError) Error() string   { return e.message }
-func (e temporaryNetError) Timeout() bool   { return false }
-func (e temporaryNetError) Temporary() bool { return true }
+func (c sshConnStub) User() string          { return c.user }
+func (c sshConnStub) SessionID() []byte     { return c.sessionID }
+func (c sshConnStub) ClientVersion() []byte { return []byte("SSH-2.0-test-client") }
+func (c sshConnStub) ServerVersion() []byte { return []byte("SSH-2.0-test-server") }
+func (c sshConnStub) RemoteAddr() net.Addr  { return stubAddr("remote") }
+func (c sshConnStub) LocalAddr() net.Addr   { return stubAddr("local") }
+func (c sshConnStub) SendRequest(string, bool, []byte) (bool, []byte, error) {
+	return false, nil, errors.New("unexpected request")
+}
+func (c sshConnStub) OpenChannel(string, []byte) (ssh.Channel, <-chan *ssh.Request, error) {
+	return nil, nil, errors.New("unexpected channel open")
+}
+func (c sshConnStub) Close() error { return nil }
+func (c sshConnStub) Wait() error  { return nil }
 
 type stubAddr string
 

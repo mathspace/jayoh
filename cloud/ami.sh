@@ -128,6 +128,21 @@ echo "$(
 EOF
 sudo chmod +x /opt/get_own_tag
 
+cat <<"EOF" | sudo tee /opt/get_own_region > /dev/null
+#!/bin/bash
+set -ex -o pipefail
+
+METABASE='http://169.254.169.254'
+TOKEN="$(curl -fsS --connect-timeout 2 -X PUT "$METABASE/latest/api/token" \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')"
+INSTANCE_DOCUMENT="$(curl -fsS --connect-timeout 2 \
+  -H "X-aws-ec2-metadata-token: $TOKEN" \
+  "$METABASE/latest/dynamic/instance-identity/document")"
+
+printf '%s\n' "$INSTANCE_DOCUMENT" | jq -r .region
+EOF
+sudo chmod +x /opt/get_own_region
+
 # Setup script to store server key in the right place on boot
 cat <<"EOF" | sudo tee /etc/systemd/system/key_loader.service > /dev/null
 [Unit]
@@ -137,7 +152,7 @@ Before=jayoh.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -xe -o pipefail -c 'aws ssm get-parameter --with-decryption --name "$(/opt/get_own_tag jayoh/server_key_parameter_name)" | jq -r .Parameter.Value > /etc/jayoh/secrets/server_key'
+ExecStart=/bin/bash -xe -o pipefail -c 'aws ssm get-parameter --region "$(/opt/get_own_region)" --with-decryption --name "$(/opt/get_own_tag jayoh/server_key_parameter_name)" | jq -r .Parameter.Value > /etc/jayoh/secrets/server_key'
 User=jayoh
 StandardOutput=syslog
 StandardError=syslog
