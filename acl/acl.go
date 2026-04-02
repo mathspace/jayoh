@@ -17,7 +17,7 @@ import (
 // - CIDRs (e.g. "192.168.0.0/16")
 // - Host names (e.g. "google.com") are matched exactly
 type HostPattern struct {
-	v interface{}
+	v any
 }
 
 func (h *HostPattern) UnmarshalJSON(b []byte) error {

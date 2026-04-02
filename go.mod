@@ -1,5 +1,7 @@
-module github.com/oxplot/jayoh
+module github.com/mathspace/jayoh
 
-go 1.12
+go 1.26
 
-require golang.org/x/crypto v0.0.0-20190313024323-a1f597ede03a
+require golang.org/x/crypto v0.49.0
+
+require golang.org/x/sys v0.42.0 // indirect

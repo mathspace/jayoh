@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -18,7 +17,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/oxplot/jayoh/acl"
+	"github.com/mathspace/jayoh/acl"
 )
 
 var (
@@ -63,8 +62,8 @@ type directTCPIPPayload struct {
 	OriginPort uint32
 }
 
-// sessionId returns the session ID of the given SSH connection in hex string
-func sessionId(c ssh.Conn) string {
+// sessionID returns the session ID of the given SSH connection in hex string
+func sessionID(c ssh.Conn) string {
 	return hex.EncodeToString(c.SessionID())
 }
 
@@ -127,7 +126,7 @@ func handleConn(c net.Conn) {
 		return
 	}
 	defer conn.Close()
-	log.Printf("remote %s: logged in to session %s as user \"%s\"", c.RemoteAddr(), sessionId(conn), conn.User())
+	log.Printf("remote %s: logged in to session %s as user \"%s\"", c.RemoteAddr(), sessionID(conn), conn.User())
 	go ssh.DiscardRequests(reqs)
 
 	// Periodic liveness checks
@@ -138,7 +137,7 @@ func handleConn(c net.Conn) {
 			select {
 			case <-ticker.C:
 				if !isClientAlive(ctx, conn) {
-					log.Printf("session %s: keep alive failed", sessionId(conn))
+					log.Printf("session %s: keep alive failed", sessionID(conn))
 					cancelFn()
 					return
 				}
@@ -161,7 +160,7 @@ NewChan:
 				go handleDirectTCP(ctx, conn, newChan)
 
 			default:
-				log.Printf("session %s: new channel \"%s\" not supported", sessionId(conn), newChan.ChannelType())
+				log.Printf("session %s: new channel \"%s\" not supported", sessionID(conn), newChan.ChannelType())
 				go newChan.Reject(ssh.UnknownChannelType, "only tcp forwarding is supported")
 			}
 		case <-ctx.Done():
@@ -169,7 +168,7 @@ NewChan:
 		}
 	}
 
-	log.Printf("session %s: disconnected", sessionId(conn))
+	log.Printf("session %s: disconnected", sessionID(conn))
 }
 
 // handleDirectTCP handles request to setup new SSH port forwarding channel
@@ -178,31 +177,31 @@ func handleDirectTCP(ctx context.Context, conn *ssh.ServerConn, newChan ssh.NewC
 	// Read out the destination host requested to connect to
 	pl := directTCPIPPayload{}
 	if err := ssh.Unmarshal(newChan.ExtraData(), &pl); err != nil {
-		log.Printf("session %s: bad direct-tcpip payload", sessionId(conn))
+		log.Printf("session %s: bad direct-tcpip payload", sessionID(conn))
 		newChan.Reject(ssh.UnknownChannelType, "bad payload")
 		return
 	}
 
 	if !accessControlList.IsAllowedHostAccess(conn.User(), pl.Host) {
-		log.Printf("session %s: connection to \"%s\" is not allowed for user \"%s\"", sessionId(conn), pl.Host, conn.User())
+		log.Printf("session %s: connection to \"%s\" is not allowed for user \"%s\"", sessionID(conn), pl.Host, conn.User())
 		newChan.Reject(ssh.Prohibited, fmt.Sprintf("connection to \"%s\" is not allowed for user \"%s\"", pl.Host, conn.User()))
 		return
 	}
 
 	// Connect to the remote host
-	tcpConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", pl.Host, pl.HostPort))
+	tcpConn, err := net.Dial("tcp", net.JoinHostPort(pl.Host, fmt.Sprintf("%d", pl.HostPort)))
 	if err != nil {
-		log.Printf("session %s: failed to connect to \"%s\" on port %d: %s", sessionId(conn), pl.Host, pl.HostPort, err)
+		log.Printf("session %s: failed to connect to \"%s\" on port %d: %s", sessionID(conn), pl.Host, pl.HostPort, err)
 		newChan.Reject(ssh.ConnectionFailed, err.Error())
 		return
 	}
 	defer tcpConn.Close()
 
-	log.Printf("session %s: successful TCP connection to \"%s\" on port %d", sessionId(conn), pl.Host, pl.HostPort)
+	log.Printf("session %s: successful TCP connection to \"%s\" on port %d", sessionID(conn), pl.Host, pl.HostPort)
 
 	chans, reqs, err := newChan.Accept()
 	if err != nil {
-		log.Printf("session %s: failed to accept new connection request: %s", sessionId(conn), err)
+		log.Printf("session %s: failed to accept new connection request: %s", sessionID(conn), err)
 		return
 	}
 	defer chans.Close()
@@ -221,7 +220,7 @@ func handleDirectTCP(ctx context.Context, conn *ssh.ServerConn, newChan ssh.NewC
 	}()
 
 	<-connCtx.Done()
-	log.Printf("session %s TCP connection to \"%s\" on port %d terminated", sessionId(conn), pl.Host, pl.HostPort)
+	log.Printf("session %s TCP connection to \"%s\" on port %d terminated", sessionID(conn), pl.Host, pl.HostPort)
 }
 
 func reloadACL() error {
@@ -245,7 +244,7 @@ func run() error {
 
 	// Load config file
 	{
-		b, err := ioutil.ReadFile(*configPath)
+		b, err := os.ReadFile(*configPath)
 		if err != nil {
 			return err
 		}
@@ -258,7 +257,7 @@ func run() error {
 	}
 
 	{
-		b, err := ioutil.ReadFile(config.ServerKeyFile)
+		b, err := os.ReadFile(config.ServerKeyFile)
 		if err != nil {
 			return err
 		}
